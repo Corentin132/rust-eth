@@ -1,0 +1,13 @@
+default_node = "127.0.0.1:9999"
+
+[fee_config]
+fee_type = "Percent"
+value = 0.1
+
+[[contacts]]
+name = "Bob"
+key = "../validator/bob.pub.pem"
+
+[[my_keys]]
+public = "../validator/alice.pub.pem"
+private = "../validator/alice.priv.cbor"

@@ -1,0 +1,3 @@
+# Add sync with mutliple node 
+ - mutli-thread miner 
+ - process_orphans --> blockchains.add_block  ✅
