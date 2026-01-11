@@ -1,6 +1,6 @@
 use super::{Block, Transaction, TransactionOutput};
 use crate::crypto::PublicKey;
-use crate::error::{BtcError, Result};
+use crate::error::{EthError, Result};
 use crate::sha256::Hash;
 use crate::util::MerkleRoot;
 use crate::util::Saveable;
@@ -19,6 +19,22 @@ impl Saveable for Blockchain {
             .map_err(|_| IoError::new(IoErrorKind::InvalidData, "Failed to serialize Blockchain"))
     }
 }
+
+/// Record of a slashing event
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SlashingRecord {
+    pub validator: PublicKey,
+    pub block_height: u64,
+    pub reason: SlashingReason,
+    pub penalty_amount: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum SlashingReason {
+    DoubleSigning,
+    Downtime,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 
 pub struct Blockchain {
@@ -28,6 +44,12 @@ pub struct Blockchain {
     mempool: Vec<(DateTime<Utc>, Transaction)>,
     #[serde(default, skip_serializing)]
     orphan_children: HashMap<Hash, Vec<Block>>,
+    /// Slashing records for accountability
+    #[serde(default)]
+    slashing_history: Vec<SlashingRecord>,
+    /// Slashed validators - reduced stake amounts (pubkey -> slashed amount)
+    #[serde(default)]
+    slashed_amounts: HashMap<PublicKey, u64>,
 }
 impl Blockchain {
     pub fn new() -> Self {
@@ -36,6 +58,8 @@ impl Blockchain {
             utxos: HashMap::new(),
             mempool: vec![],
             orphan_children: HashMap::new(),
+            slashing_history: vec![],
+            slashed_amounts: HashMap::new(),
         }
     }
     pub fn add_block(&mut self, block: Block) -> Result<()> {
@@ -62,11 +86,11 @@ impl Blockchain {
             if let Some(validator) = expected_validator {
                 if block.header.validator != validator {
                     println!("invalid validator");
-                    return Err(BtcError::InvalidValidator);
+                    return Err(EthError::InvalidValidator);
                 }
             } else {
                 println!("no stakes found");
-                return Err(BtcError::InvalidValidator);
+                return Err(EthError::InvalidValidator);
             }
             // check if the block's signature is valid
             if !block
@@ -74,20 +98,20 @@ impl Blockchain {
                 .verify(&block.header.hash(), &block.header.validator)
             {
                 println!("invalid signature");
-                return Err(BtcError::InvalidSignature);
+                return Err(EthError::InvalidSignature);
             }
             let calculated_merkle_root = MerkleRoot::calculate(&block.transactions);
             if calculated_merkle_root != block.header.merkle_root {
                 println!("invalid merkle root");
-                return Err(BtcError::InvalidMerkleRoot);
+                return Err(EthError::InvalidMerkleRoot);
             }
             // check if the block's timestamp is after the
             // last block's timestamp
             if block.header.timestamp <= last_block.header.timestamp {
-                return Err(BtcError::InvalidBlock);
+                return Err(EthError::InvalidBlock);
             }
             // Verify all transactions in the block
-            block.verify_transactions(self.block_height(), &self.utxos)?;
+            block.verify_transactions(&self.utxos)?;
         }
         let block_transactions: HashSet<_> =
             block.transactions.iter().map(|tx| tx.hash()).collect();
@@ -102,11 +126,24 @@ impl Blockchain {
     }
     pub fn calculate_stakes(&self) -> HashMap<PublicKey, u64> {
         let mut stakes = HashMap::new();
-        for (_, output) in self.utxos.values() {
+        let current_height = self.block_height();
+
+        for (_, (_, output)) in self.utxos.values().enumerate() {
             if output.is_stake {
-                *stakes.entry(output.pubkey.clone()).or_insert(0) += output.value;
+                // Only count stakes that are locked (active validators must have locked stake)
+                if output.locked_until > current_height {
+                    *stakes.entry(output.pubkey.clone()).or_insert(0) += output.value;
+                }
             }
         }
+
+        // Subtract slashed amounts from stakes
+        for (pubkey, slashed_amount) in &self.slashed_amounts {
+            if let Some(stake) = stakes.get_mut(pubkey) {
+                *stake = stake.saturating_sub(*slashed_amount);
+            }
+        }
+
         stakes.retain(|_, v| *v >= Self::get_min_stake_amount());
         stakes
     }
@@ -127,6 +164,7 @@ impl Blockchain {
         let random_value = u64::from_be_bytes(bytes) % total_stake;
 
         let mut current_sum = 0;
+        // sort stakes by pubkey to ensure deterministic behavior !!!!
         let mut sorted_stakes: Vec<_> = stakes.into_iter().collect();
         sorted_stakes.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -187,17 +225,30 @@ impl Blockchain {
     pub fn add_to_mempool(&mut self, transaction: Transaction) -> Result<()> {
         // validate transaction before insertion
         // all inputs must match known UTXOs, and must be unique
+        let current_height = self.block_height();
         let mut known_inputs = HashSet::new();
+
         for input in &transaction.inputs {
             if !self.utxos.contains_key(&input.prev_transaction_output_hash) {
                 println!("UTXO not found");
                 dbg!(&self.utxos);
-                return Err(BtcError::InvalidTransaction);
+                return Err(EthError::InvalidTransaction);
+            }
+
+            // Check if the UTXO is a locked stake
+            if let Some((_, utxo)) = self.utxos.get(&input.prev_transaction_output_hash) {
+                if utxo.is_stake && utxo.locked_until > current_height {
+                    println!(
+                        "Stake is still locked until block {}, current height is {}",
+                        utxo.locked_until, current_height
+                    );
+                    return Err(EthError::StakeLocked);
+                }
             }
 
             if known_inputs.contains(&input.prev_transaction_output_hash) {
                 println!("duplicate input");
-                return Err(BtcError::InvalidTransaction);
+                return Err(EthError::InvalidTransaction);
             }
 
             known_inputs.insert(input.prev_transaction_output_hash);
@@ -263,7 +314,7 @@ impl Blockchain {
 
         if all_inputs < all_outputs {
             print!("inputs are lower than outputs");
-            return Err(BtcError::InvalidTransaction);
+            return Err(EthError::InvalidTransaction);
         }
 
         // Mark the UTXOs as used
@@ -331,6 +382,63 @@ impl Blockchain {
         (crate::INITIAL_REWARD * 10u64.pow(8)) >> halvings
     }
     //🚨 Better to have getters than public fields --> for futur stockage purposes
+
+    /// Slash a validator for misbehavior (double-signing, downtime, etc.)
+    pub fn slash_validator(&mut self, pubkey: &PublicKey, reason: SlashingReason) -> Result<u64> {
+        let stakes = self.calculate_stakes();
+        let stake = stakes.get(pubkey).cloned().unwrap_or(0);
+
+        if stake == 0 {
+            return Err(EthError::InvalidValidator);
+        }
+
+        let penalty_rate = match reason {
+            SlashingReason::DoubleSigning => crate::SLASHING_PENALTY_DOUBLE_SIGN,
+            SlashingReason::Downtime => crate::SLASHING_PENALTY_DOWNTIME,
+        };
+
+        // Calculate penalty (basis points: 10000 = 100%)
+        let penalty_amount = (stake * penalty_rate) / 10000;
+
+        // Record the slashing
+        let record = SlashingRecord {
+            validator: pubkey.clone(),
+            block_height: self.block_height(),
+            reason,
+            penalty_amount,
+        };
+        self.slashing_history.push(record);
+
+        // Add to slashed amounts
+        *self.slashed_amounts.entry(pubkey.clone()).or_insert(0) += penalty_amount;
+
+        println!(
+            "🔪 Validator {:?} slashed for {} coins",
+            pubkey, penalty_amount
+        );
+        Ok(penalty_amount)
+    }
+
+    /// Check if a validator is currently slashed (has any pending slashing)
+    pub fn is_validator_slashed(&self, pubkey: &PublicKey) -> bool {
+        self.slashed_amounts
+            .get(pubkey)
+            .map_or(false, |&amt| amt > 0)
+    }
+
+    /// Get the effective stake after slashing penalties
+    pub fn get_effective_stake(&self, pubkey: &PublicKey) -> u64 {
+        let stakes = self.calculate_stakes();
+        let stake = stakes.get(pubkey).cloned().unwrap_or(0);
+        let slashed = self.slashed_amounts.get(pubkey).cloned().unwrap_or(0);
+        stake.saturating_sub(slashed)
+    }
+
+    /// Get slashing history
+    pub fn slashing_history(&self) -> &[SlashingRecord] {
+        &self.slashing_history
+    }
+
     pub fn utxos(&self) -> &HashMap<Hash, (bool, TransactionOutput)> {
         &self.utxos
     }

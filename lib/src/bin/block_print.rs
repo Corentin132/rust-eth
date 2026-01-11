@@ -1,6 +1,6 @@
 // bin/block_print.rs
-use btclib::types::Block;
-use btclib::util::Saveable;
+use poslib::types::Block;
+use poslib::util::Saveable;
 use std::env;
 use std::fs::File;
 use std::process::exit;

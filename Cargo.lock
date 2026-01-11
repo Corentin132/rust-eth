@@ -185,26 +185,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "btclib"
-version = "0.1.0"
-dependencies = [
- "bigdecimal",
- "chrono",
- "ciborium",
- "ecdsa",
- "hex",
- "k256",
- "rand",
- "serde",
- "sha256",
- "spki",
- "thiserror",
- "tokio",
- "uint",
- "uuid",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1051,9 +1031,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argh",
- "btclib",
  "chrono",
  "dashmap",
+ "poslib",
  "static_init",
  "tokio",
  "uuid",
@@ -1218,6 +1198,26 @@ checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
 dependencies = [
  "der",
  "spki",
+]
+
+[[package]]
+name = "poslib"
+version = "0.1.0"
+dependencies = [
+ "bigdecimal",
+ "chrono",
+ "ciborium",
+ "ecdsa",
+ "hex",
+ "k256",
+ "rand",
+ "serde",
+ "sha256",
+ "spki",
+ "thiserror",
+ "tokio",
+ "uint",
+ "uuid",
 ]
 
 [[package]]
@@ -1885,9 +1885,12 @@ name = "validator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "btclib",
+ "chrono",
  "clap",
+ "node",
+ "poslib",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1907,12 +1910,12 @@ name = "wallet"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "btclib",
  "clap",
  "crossbeam-skiplist",
  "cursive",
  "futures",
  "kanal",
+ "poslib",
  "serde",
  "text-to-ascii-art",
  "tokio",

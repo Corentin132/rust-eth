@@ -1,4 +1,4 @@
-default_node = "127.0.0.1:9000"
+default_node = "127.0.0.1:9001"
 
 [fee_config]
 fee_type = "Percent"
@@ -6,9 +6,9 @@ value = 0.1
 
 [[contacts]]
 name = "Alice"
-key = "../miner/alice.pub.pem"
+key = "../validator/alice.pub.pem"
 
 
 [[my_keys]]
-public = "../miner/bob.pub.pem"
-private = "../miner/bob.priv.cbor"
+public = "../validator/bob.pub.pem"
+private = "../validator/bob.priv.cbor"

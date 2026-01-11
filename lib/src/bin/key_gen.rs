@@ -1,5 +1,5 @@
-use btclib::crypto::PrivateKey;
-use btclib::util::Saveable;
+use poslib::crypto::PrivateKey;
+use poslib::util::Saveable;
 use std::env;
 fn main() {
     let name = env::args().nth(1).expect("Please provide a name");

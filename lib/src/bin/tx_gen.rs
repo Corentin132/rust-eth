@@ -1,6 +1,6 @@
-use btclib::crypto::PrivateKey;
-use btclib::types::{Transaction, TransactionOutput};
-use btclib::util::Saveable;
+use poslib::crypto::PrivateKey;
+use poslib::types::{Transaction, TransactionOutput};
+use poslib::util::Saveable;
 use std::env;
 use std::process::exit;
 use uuid::Uuid;
@@ -16,8 +16,10 @@ fn main() {
         vec![],
         vec![TransactionOutput {
             unique_id: Uuid::new_v4(),
-            value: btclib::INITIAL_REWARD * 10u64.pow(8),
+            value: poslib::INITIAL_REWARD * 10u64.pow(8),
             pubkey: private_key.public_key(),
+            is_stake: false,
+            locked_until: 0,
         }],
     );
     transaction

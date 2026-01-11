@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
-use btclib::crypto::{PrivateKey, PublicKey, Signature};
-use btclib::network::Message;
-use btclib::sha256::Hash;
-use btclib::types::{Block, BlockHeader, Blockchain, Transaction, TransactionOutput};
-use btclib::util::{MerkleRoot, Saveable};
 use chrono::Utc;
+use poslib::crypto::{PrivateKey, PublicKey, Signature};
+use poslib::network::Message;
+use poslib::sha256::Hash;
+use poslib::types::{Block, BlockHeader, Blockchain, Transaction, TransactionOutput};
+use poslib::util::{MerkleRoot, Saveable};
 use tokio::net::TcpStream;
 use tokio::time;
 use uuid::Uuid;
@@ -14,15 +14,31 @@ pub fn create_genesis_block() -> Block {
 
     // Try to load pre-defined validators
     let validators = vec!["validator/alice.pub.pem", "validator/bob.pub.pem"];
+    let validator_count = validators.len() as u64;
     for path in validators {
         if let Ok(pubkey) = PublicKey::load_from_file(path) {
             println!("Allocating genesis stake to {}", path);
+            // Staked coins - MUST have locked_until > current_height to be counted!
             outputs.push(TransactionOutput {
                 unique_id: Uuid::new_v4(),
-                value: btclib::STAKE_MINIMUM_AMOUNT,
-                pubkey,
+                value: poslib::TOTAL_SUPPLY_CAP / validator_count,
+                pubkey: pubkey.clone(),
                 is_stake: true,
+                locked_until: 1_000_000, // Locked for a very long time (active stake)
             });
+            println!(
+                "  - Allocated {} staked coins (locked until block 1,000,000)",
+                poslib::TOTAL_SUPPLY_CAP / validator_count
+            );
+            // Spendable coins - NOT staked, can be used immediately
+            outputs.push(TransactionOutput {
+                unique_id: Uuid::new_v4(),
+                value: 100_000_000_000,
+                pubkey: pubkey.clone(),
+                is_stake: false, // Regular spendable coins
+                locked_until: 0, // Not locked
+            });
+            println!("  - Allocated {} spendable coins", 100_000_000_000u64);
         }
     }
 

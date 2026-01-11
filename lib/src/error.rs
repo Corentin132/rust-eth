@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum BtcError {
+pub enum EthError {
     #[error("Invalid transaction")]
     InvalidTransaction,
     #[error("Invalid block")]
@@ -24,6 +24,14 @@ pub enum BtcError {
     InvalidPrivateKey,
     #[error("Invalid validator")]
     InvalidValidator,
+    #[error("Invalid stake amount")]
+    InvalidStakeAmount,
+    #[error("Stake is still locked")]
+    StakeLocked,
+    #[error("Validator has been slashed")]
+    ValidatorSlashed,
+    #[error("Double signing detected")]
+    DoubleSigning,
 }
 
-pub type Result<T> = std::result::Result<T, BtcError>;
+pub type Result<T> = std::result::Result<T, EthError>;

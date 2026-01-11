@@ -1,9 +1,9 @@
-use btclib::crypto::Signature;
-use btclib::network::Message;
-use btclib::sha256::Hash;
-use btclib::types::{Block, BlockHeader, Transaction, TransactionOutput};
-use btclib::util::MerkleRoot;
 use chrono::Utc;
+use poslib::crypto::{PublicKey, Signature};
+use poslib::network::Message;
+use poslib::sha256::Hash;
+use poslib::types::{Block, BlockHeader, Transaction, TransactionOutput};
+use poslib::util::MerkleRoot;
 use tokio::net::TcpStream;
 use uuid::Uuid;
 pub async fn handle_connection(mut socket: TcpStream) {
@@ -12,15 +12,22 @@ pub async fn handle_connection(mut socket: TcpStream) {
         let message = match Message::receive_async(&mut socket).await {
             Ok(message) => message,
             Err(e) => {
+                // Check if it's just a clean disconnect (EOF)
+                let err_str = e.to_string();
+                if err_str.contains("eof") || err_str.contains("UnexpectedEof") {
+                    // Normal disconnect - peer closed the connection
+                    return;
+                }
                 println!("invalid message from peer: {e}, closing that connection");
                 return;
             }
         };
 
-        use btclib::network::Message::*;
+        use poslib::network::Message::*;
         match message {
-            UTXOs(_) | Template(_) | Difference(_) | TemplateValidity(_) | NodeList(_) => {
-                println!("I am neither a miner nor a wallet! Goodbye peer 💅");
+            UTXOs(_) | Template(_) | Difference(_) | TemplateValidity(_) | NodeList(_)
+            | BlockHeight(_) | NextValidator(_) => {
+                println!("I am neither a validator nor a wallet! Goodbye peer 💅");
                 return;
             }
             FetchBlock(height) => {
@@ -44,6 +51,12 @@ pub async fn handle_connection(mut socket: TcpStream) {
                 let blockchain = crate::BLOCKCHAIN.read().await;
                 let count = blockchain.block_height() as i32 - height as i32;
                 let message = Difference(count);
+                message.send_async(&mut socket).await.unwrap();
+            }
+            FetchBlockHeight => {
+                let blockchain = crate::BLOCKCHAIN.read().await;
+                let height = blockchain.block_height();
+                let message = BlockHeight(height);
                 message.send_async(&mut socket).await.unwrap();
             }
             FetchUTXOs(key) => {
@@ -73,17 +86,18 @@ pub async fn handle_connection(mut socket: TcpStream) {
                     return;
                 }
             }
-            ValidateTemplate(block_template) => {
-                let blockchain = crate::BLOCKCHAIN.read().await;
-                let status = block_template.header.prev_block_hash
-                    == blockchain
-                        .blocks()
-                        .last()
-                        .map(|last_block| last_block.hash())
-                        .unwrap_or(Hash::zero());
-                let message = TemplateValidity(status);
-                message.send_async(&mut socket).await.unwrap();
-            }
+            // ValidateTemplate(block_template) => {
+            //     let blockchain = crate::BLOCKCHAIN.read().await;
+            //     let status = block_template.header.prev_block_hash
+            //         == blockchain
+            //             .blocks()
+            //             .last()
+            //             .map(|last_block| last_block.hash())
+            //             .unwrap_or(Hash::zero());
+            //     let message = TemplateValidity(status);
+            //     message.send_async(&mut socket).await.unwrap();
+            // }
+            // 🚨🚨🚨🚨🚨 Verification du block ou ça ????
             SubmitTemplate(block) => {
                 println!("received allegedly validated block");
                 let mut blockchain = crate::BLOCKCHAIN.write().await;
@@ -130,116 +144,28 @@ pub async fn handle_connection(mut socket: TcpStream) {
                 }
                 println!("transaction sent to friends");
             }
-            FetchTemplate(pubkey) => {
-                let blockchain = crate::BLOCKCHAIN.read().await;
 
-                let last_block_hash = blockchain
-                    .blocks()
-                    .last()
-                    .map(|last_block| last_block.hash())
-                    .unwrap_or(Hash::zero());
+            SlashValidator {
+                validator,
+                reason,
+                evidence: _,
+            } => {
+                use poslib::types::SlashingReason;
+                let mut blockchain = crate::BLOCKCHAIN.write().await;
 
-                // Check if the requester is the allowed validator
-                if let Some(expected_validator) = blockchain.get_next_validator(&last_block_hash) {
-                    if expected_validator != pubkey {
-                        println!(
-                            "Requester {:?} is not the expected validator {:?}",
-                            pubkey, expected_validator
-                        );
-                        return;
-                    }
-                }
-
-                // 1. Build candidate transactions list (without coinbase)
-                let transactions = blockchain
-                    .mempool()
-                    .iter()
-                    .take(btclib::BLOCK_TRANSACTION_CAP)
-                    .map(|(_, tx)| tx)
-                    .cloned()
-                    .collect::<Vec<_>>();
-
-                // 2. Calculate fees from these transactions
-                let mut miner_fees = 0;
-                let mut valid_transactions = Vec::new();
-
-                for tx in transactions {
-                    let mut input_sum = 0;
-                    let mut output_sum = 0;
-                    let mut is_valid = true;
-
-                    for input in &tx.inputs {
-                        if let Some((_, output)) =
-                            blockchain.utxos().get(&input.prev_transaction_output_hash)
-                        {
-                            input_sum += output.value;
-                        } else {
-                            eprintln!(
-                                "Error: UTXO not found for transaction input. Skipping transaction."
-                            );
-                            is_valid = false;
-                            break;
-                        }
-                    }
-
-                    if !is_valid {
-                        continue;
-                    }
-
-                    for output in &tx.outputs {
-                        output_sum += output.value;
-                    }
-
-                    if input_sum < output_sum {
-                        eprintln!("Error: Transaction inputs < outputs. Skipping transaction.");
-                        continue;
-                    }
-
-                    miner_fees += input_sum - output_sum;
-                    valid_transactions.push(tx);
-                }
-
-                let mut transactions = valid_transactions;
-
-                let reward = blockchain.calculate_block_reward();
-
-                // 3. Create coinbase with reward + fees
-                let coinbase = Transaction {
-                    inputs: vec![],
-                    outputs: vec![TransactionOutput {
-                        pubkey: pubkey.clone(),
-                        unique_id: Uuid::new_v4(),
-                        value: reward + miner_fees,
-                        is_stake: false,
-                    }],
+                let slashing_reason = if reason.contains("double") {
+                    SlashingReason::DoubleSigning
+                } else {
+                    SlashingReason::Downtime
                 };
 
-                // 4. Prefix coinbase
-                transactions.insert(0, coinbase);
-
-                // 5. Calculate merkle root once
-                let merkle_root = MerkleRoot::calculate(&transactions);
-
-                // 6. Construct block
-                let header = BlockHeader::new(
-                    Utc::now(),
-                    blockchain
-                        .blocks()
-                        .last()
-                        .map(|last_block| last_block.hash())
-                        .unwrap_or(Hash::zero()),
-                    merkle_root,
-                    pubkey,
-                );
-                // Create a dummy signature for the template, the validator will replace it
-                let dummy_signature =
-                    Signature::sign_output(&header.hash(), &btclib::crypto::PrivateKey::new_key());
-                let block = Block::new(header, transactions, dummy_signature);
-
-                let message = Template(block);
-                if let Err(e) = message.send_async(&mut socket).await {
-                    println!("Failed to send template to validator: {}", e);
-                    return;
+                match blockchain.slash_validator(&validator, slashing_reason) {
+                    Ok(penalty) => {
+                        println!("🔪 Validator slashed! Penalty: {} coins", penalty);
+                    }
+                    Err(e) => {
+                        println!("Failed to slash validator: {}", e);
+                    }
                 }
             }
         }

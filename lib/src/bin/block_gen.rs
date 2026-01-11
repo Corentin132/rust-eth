@@ -1,8 +1,8 @@
-use btclib::crypto::PrivateKey;
-use btclib::sha256::Hash;
-use btclib::types::{Block, BlockHeader, Transaction, TransactionOutput};
-use btclib::util::{MerkleRoot, Saveable};
 use chrono::Utc;
+use poslib::crypto::PrivateKey;
+use poslib::sha256::Hash;
+use poslib::types::{Block, BlockHeader, Transaction, TransactionOutput};
+use poslib::util::{MerkleRoot, Saveable};
 use std::env;
 use std::process::exit;
 use uuid::Uuid;
@@ -19,9 +19,10 @@ fn main() {
         vec![],
         vec![TransactionOutput {
             unique_id: Uuid::new_v4(),
-            value: btclib::INITIAL_REWARD * 10u64.pow(8),
+            value: poslib::INITIAL_REWARD * 10u64.pow(8),
             pubkey: private_key.public_key(),
             is_stake: true, // Genesis block output is staked so we have a validator
+            locked_until: 0,
         }],
     )];
     let merkel_root = MerkleRoot::calculate(&transactions);
@@ -31,7 +32,7 @@ fn main() {
         merkel_root,
         private_key.public_key(),
     );
-    let signature = btclib::crypto::Signature::sign_output(&header.hash(), &private_key);
+    let signature = poslib::crypto::Signature::sign_output(&header.hash(), &private_key);
     let block = Block::new(header, transactions, signature);
     block.save_to_file(path).expect("Failed to save block");
 }

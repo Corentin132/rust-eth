@@ -20,19 +20,25 @@ pub enum Message {
     /// Ask the node to prepare the optimal block template
     /// with the coinbase transaction paying the specified
     /// public key
-    FetchTemplate(PublicKey),
+    // FetchTemplate(PublicKey),
     /// The template
     Template(Block),
     /// Ask the node to validate a block template.
     /// This is to prevent the node from mining an invalid
     /// block (e.g. if one has been found in the meantime,
     /// or if transactions have been removed from the mempool)
-    ValidateTemplate(Block),
+    // ValidateTemplate(Block),
     /// If template is valid
     TemplateValidity(bool),
-    /// Submit a mined block to a node
+    /// Submit a validated block to a node
     SubmitTemplate(Block),
 
+    /// Report a slashing event (double-signing, downtime)
+    SlashValidator {
+        validator: PublicKey,
+        reason: String,
+        evidence: Vec<u8>, // Block signatures or other proof
+    },
     /// Ask a node to report all the other nodes it knows
     /// about
     DiscoverNodes,
@@ -47,6 +53,12 @@ pub enum Message {
     FetchBlock(usize),
     /// Broadcast a new block to other nodes
     NewBlock(Block),
+    /// Ask the current block height from a node
+    FetchBlockHeight,
+    /// Response with the current block height
+    BlockHeight(u64),
+    /// Response with the next expected validator's public key (None if no validators)
+    NextValidator(Option<PublicKey>),
 }
 
 // We are going to use length-prefixed encoding for message

@@ -46,9 +46,17 @@ pub struct TransactionOutput {
     pub pubkey: PublicKey,
     #[serde(default)]
     pub is_stake: bool,
+    /// Block height until which staked funds are locked (0 = not locked)
+    #[serde(default)]
+    pub locked_until: u64,
 }
 impl TransactionOutput {
     pub fn hash(&self) -> Hash {
         Hash::hash(self)
+    }
+    
+    /// Check if this output is currently locked at the given block height
+    pub fn is_locked(&self, current_block_height: u64) -> bool {
+        self.is_stake && self.locked_until > current_block_height
     }
 }

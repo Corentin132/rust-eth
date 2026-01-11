@@ -3,10 +3,18 @@ name = "node"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "node_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "node"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.100"
 argh = "0.1.13"
-btclib = { version = "0.1.0", path = "../lib" }
+poslib = { version = "0.1.0", path = "../lib" }
 chrono = "0.4.42"
 dashmap = "6.1.0"
 static_init = "1.0.4"

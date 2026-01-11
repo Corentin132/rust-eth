@@ -22,3 +22,11 @@ pub const MAX_MEMPOOL_TRANSACTION_AGE: u64 = 600;
 
 // maximum number of transactions in a block
 pub const BLOCK_TRANSACTION_CAP: usize = 20;
+pub const TOTAL_SUPPLY_CAP: u64 = 21_000_000 * 10u64.pow(8); // 21 million coins in satoshis
+// ===== Proof of Stake Constants =====
+// Stake lock period in blocks (unbonding period)
+pub const STAKE_LOCK_PERIOD: u64 = 100; // ~100 blocks before stake can be withdrawn
+// Slashing percentage for double-signing (in basis points, 1000 = 10%)
+pub const SLASHING_PENALTY_DOUBLE_SIGN: u64 = 1000;
+// Slashing percentage for being offline/missing blocks (in basis points)
+pub const SLASHING_PENALTY_DOWNTIME: u64 = 100; // 1%

@@ -1,5 +1,5 @@
-use btclib::types::Transaction;
-use btclib::util::Saveable;
+use poslib::types::Transaction;
+use poslib::util::Saveable;
 use std::env;
 use std::fs::File;
 use std::process::exit;

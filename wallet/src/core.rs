@@ -1,9 +1,10 @@
 use anyhow::Result;
-use btclib::crypto::{PrivateKey, PublicKey};
-use btclib::network::Message;
-use btclib::types::{Transaction, TransactionOutput};
-use btclib::util::Saveable;
 use crossbeam_skiplist::SkipMap;
+use poslib::STAKE_MINIMUM_AMOUNT;
+use poslib::crypto::{PrivateKey, PublicKey};
+use poslib::network::Message;
+use poslib::types::{Transaction, TransactionOutput};
+use poslib::util::Saveable;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -93,6 +94,14 @@ impl Core {
     }
     pub fn load(config_path: PathBuf) -> Result<Self> {
         let config: Config = toml::from_str(&fs::read_to_string(&config_path)?)?;
+        if !config.my_keys.is_empty() {
+            println!("Loaded wallet config from {}", config_path.display());
+        } else {
+            println!(
+                "Warning: No keys found in wallet config {}",
+                config_path.display()
+            );
+        }
         let mut utxos = UtxoStore::new();
         // Load keys from config
         for key in &config.my_keys {
@@ -129,6 +138,19 @@ impl Core {
         Ok(())
     }
 
+    /// Fetch current block height from the node (source of truth)
+    pub async fn fetch_block_height(&self) -> Result<u64> {
+        let mut stream = TcpStream::connect(&self.config.default_node).await?;
+        let message = Message::FetchBlockHeight;
+        message.send_async(&mut stream).await?;
+
+        if let Message::BlockHeight(height) = Message::receive_async(&mut stream).await? {
+            Ok(height)
+        } else {
+            Err(anyhow::anyhow!("Unexpected response from node"))
+        }
+    }
+
     pub async fn create_transaction(
         &self,
         recipient: &PublicKey,
@@ -148,9 +170,9 @@ impl Core {
                 if input_sum >= total_amount {
                     break;
                 }
-                inputs.push(btclib::types::TransactionInput {
+                inputs.push(poslib::types::TransactionInput {
                     prev_transaction_output_hash: utxo.hash(),
-                    signature: btclib::crypto::Signature::sign_output(
+                    signature: poslib::crypto::Signature::sign_output(
                         &utxo.hash(),
                         &self
                             .utxos
@@ -175,6 +197,7 @@ impl Core {
             unique_id: uuid::Uuid::new_v4(),
             pubkey: recipient.clone(),
             is_stake: false,
+            locked_until: 0,
         }];
         if input_sum > total_amount {
             outputs.push(TransactionOutput {
@@ -182,6 +205,7 @@ impl Core {
                 unique_id: uuid::Uuid::new_v4(),
                 pubkey: self.utxos.my_keys[0].public.clone(),
                 is_stake: false,
+                locked_until: 0,
             });
         }
         Ok(Transaction::new(inputs, outputs))
@@ -205,9 +229,9 @@ impl Core {
                 if input_sum >= total_amount {
                     break;
                 }
-                inputs.push(btclib::types::TransactionInput {
+                inputs.push(poslib::types::TransactionInput {
                     prev_transaction_output_hash: utxo.hash(),
-                    signature: btclib::crypto::Signature::sign_output(
+                    signature: poslib::crypto::Signature::sign_output(
                         &utxo.hash(),
                         &self
                             .utxos
@@ -232,11 +256,17 @@ impl Core {
         // The output is sent back to ourselves (the first key), but marked as stake
         let my_pubkey = self.utxos.my_keys[0].public.clone();
 
+        // Fetch current block height from the node (source of truth)
+        let current_height = self.fetch_block_height().await?;
+        // Calculate lock period: current block height + STAKE_LOCK_PERIOD
+        let lock_until = current_height + poslib::STAKE_LOCK_PERIOD;
+
         let mut outputs = vec![TransactionOutput {
             value: amount,
             unique_id: uuid::Uuid::new_v4(),
             pubkey: my_pubkey.clone(),
-            is_stake: true, // This is the key difference
+            is_stake: true,           // This is the key difference
+            locked_until: lock_until, // Stake is locked for STAKE_LOCK_PERIOD blocks
         }];
 
         // Change output (not staked)
@@ -246,9 +276,127 @@ impl Core {
                 unique_id: uuid::Uuid::new_v4(),
                 pubkey: my_pubkey,
                 is_stake: false,
+                locked_until: 0,
             });
         }
         Ok(Transaction::new(inputs, outputs))
+    }
+
+    /// Create a transaction to unstake coins (convert staked UTXOs back to regular UTXOs)
+    /// Note: The node will validate that the stake lock period has passed
+    pub async fn create_unstake_transaction(&self, amount: u64) -> Result<Transaction> {
+        let fee = self.calculate_fee(amount);
+        let total_amount = amount + fee;
+        let mut inputs = Vec::new();
+        let mut input_sum = 0;
+
+        // Fetch current height from node for display purposes only
+        // The actual validation is done by the node in add_to_mempool
+        let current_height = self.fetch_block_height().await?;
+
+        // Find staked UTXOs that appear unlocked (lock period has passed)
+        for entry in self.utxos.utxos.iter() {
+            let pubkey = entry.key();
+            let utxos = entry.value();
+            for (marked, utxo) in utxos.iter() {
+                if *marked {
+                    continue; // Skip marked UTXOs
+                }
+                // Only use staked UTXOs that are unlocked
+                if !utxo.is_stake {
+                    continue;
+                }
+                // Check if lock period has passed (display check only, node validates)
+                if utxo.locked_until > current_height {
+                    continue; // Still locked
+                }
+                if input_sum >= total_amount {
+                    break;
+                }
+                inputs.push(poslib::types::TransactionInput {
+                    prev_transaction_output_hash: utxo.hash(),
+                    signature: poslib::crypto::Signature::sign_output(
+                        &utxo.hash(),
+                        &self
+                            .utxos
+                            .my_keys
+                            .iter()
+                            .find(|k| k.public == *pubkey)
+                            .unwrap()
+                            .private,
+                    ),
+                });
+                input_sum += utxo.value;
+            }
+            if input_sum >= total_amount {
+                break;
+            }
+        }
+
+        if input_sum < total_amount {
+            return Err(anyhow::anyhow!(
+                "Insufficient unlocked staked funds. You may need to wait for the lock period to expire."
+            ));
+        }
+
+        let my_pubkey = self.utxos.my_keys[0].public.clone();
+
+        // Output is NOT staked anymore
+        let mut outputs = vec![TransactionOutput {
+            value: amount,
+            unique_id: uuid::Uuid::new_v4(),
+            pubkey: my_pubkey.clone(),
+            is_stake: false, // No longer staked
+            locked_until: 0,
+        }];
+
+        // Change output (also not staked)
+        if input_sum > total_amount {
+            outputs.push(TransactionOutput {
+                value: input_sum - total_amount,
+                unique_id: uuid::Uuid::new_v4(),
+                pubkey: my_pubkey,
+                is_stake: false,
+                locked_until: 0,
+            });
+        }
+        Ok(Transaction::new(inputs, outputs))
+    }
+
+    // Get the amount of currently locked staked coins
+    pub async fn get_active_stake_balance(&self) -> Result<u64> {
+        let current_height = self.fetch_block_height().await?;
+        Ok(self
+            .utxos
+            .utxos
+            .iter()
+            .map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .filter(|(_, utxo)| utxo.is_stake && utxo.locked_until > current_height)
+                    .map(|(_, utxo)| utxo.value)
+                    .sum::<u64>()
+            })
+            .sum())
+    }
+
+    // Get the amount of currently unlocked staked coins -> Not available for staking anymore
+    pub async fn get_unlocked_stake_balance(&self) -> Result<u64> {
+        let current_height = self.fetch_block_height().await?;
+        Ok(self
+            .utxos
+            .utxos
+            .iter()
+            .map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .filter(|(_, utxo)| utxo.is_stake && utxo.locked_until <= current_height)
+                    .map(|(_, utxo)| utxo.value)
+                    .sum::<u64>()
+            })
+            .sum())
     }
 
     fn calculate_fee(&self, amount: u64) -> u64 {
@@ -257,25 +405,15 @@ impl Core {
             FeeType::Percent => (amount as f64 * self.config.fee_config.value / 100.0) as u64,
         }
     }
-    pub fn get_staked_balance(&self) -> u64 {
-        self.utxos
-            .utxos
-            .iter()
-            .map(|entry| {
-                entry
-                    .value()
-                    .iter()
-                    .filter(|(_, utxo)| utxo.is_stake)
-                    .map(|(_, utxo)| utxo.value)
-                    .sum::<u64>()
-            })
-            .sum()
-    }
+
     pub fn get_balance(&self) -> u64 {
         self.utxos
             .utxos
             .iter()
             .map(|entry| entry.value().iter().map(|utxo| utxo.1.value).sum::<u64>())
             .sum()
+    }
+    pub fn get_min_stake_amount(&self) -> u64 {
+        STAKE_MINIMUM_AMOUNT
     }
 }

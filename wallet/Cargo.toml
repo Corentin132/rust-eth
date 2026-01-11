@@ -19,4 +19,4 @@ tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
 # project 
-btclib = { version = "0.1.0", path = "../lib" }
+poslib = { version = "0.1.0", path = "../lib" }

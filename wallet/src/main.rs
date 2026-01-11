@@ -1,9 +1,9 @@
 mod core;
 use anyhow::Result;
-use btclib::types::Transaction;
 use clap::{Parser, Subcommand};
 use core::{Config, Core, FeeConfig, FeeType, Recipient};
 use kanal::bounded;
+use poslib::types::Transaction;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -82,7 +82,10 @@ async fn run_cli(core: Arc<Core>) -> Result<()> {
         match parts[0] {
             "balance" => {
                 println!("Current balance: {} satoshis", core.get_balance());
-                println!("Stakable balance: {} satoshis", core.get_staked_balance());
+                println!(
+                    "Stakable balance: {} satoshis",
+                    core.get_unlocked_stake_balance().await?
+                );
             }
 
             "send" => {
@@ -112,11 +115,11 @@ async fn run_cli(core: Arc<Core>) -> Result<()> {
                 if parts.len() == 1 {
                     println!(
                         "You need {} to be a validator node",
-                        core.config.get_min_stake()
+                        core.get_min_stake_amount()
                     );
                     println!(
                         "Your Stake amount is : {} satoshis",
-                        core.get_staked_balance()
+                        core.get_active_stake_balance().await?
                     );
                     continue;
                 }
@@ -131,6 +134,27 @@ async fn run_cli(core: Arc<Core>) -> Result<()> {
                 let transaction = core.create_stake_transaction(amount).await?;
                 core.tx_sender.send(transaction).await?;
                 println!("Stake transaction sent successfully");
+                core.fetch_utxos().await?;
+            }
+            "unstake" => {
+                if parts.len() == 1 {
+                    println!(
+                        "Your unstakable balance is : {} satoshis",
+                        core.get_unlocked_stake_balance().await?
+                    );
+                    continue;
+                }
+                if parts.len() != 2 {
+                    println!("Usage: unstake <amount>");
+                    continue;
+                }
+                let amount: u64 = parts[1].parse()?;
+                if let Err(e) = core.fetch_utxos().await {
+                    println!("failed to fetch utxos: {e}");
+                };
+                let transaction = core.create_unstake_transaction(amount).await?;
+                core.tx_sender.send(transaction).await?;
+                println!("Unstake transaction sent successfully");
                 core.fetch_utxos().await?;
             }
             "help" => {

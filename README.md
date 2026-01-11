@@ -1,12 +1,14 @@
-# Rust Bitcoin Implementation
+# ETH Rust implementation (Proof of Stake)
 
-This project is an implementation of the concepts and code presented in the book **"Building Bitcoin in Rust"**.
+## Architecture
 
-It serves as a learning resource and a practical exploration of how Bitcoin works under the hood, implemented in the Rust programming language.
+- **node** == verify blocks and propagate transactions/blocks to the network
+- **validator** == verify blocks && can forge new blocks when selected by the PoS algorithm
+- **wallet** == classic wallet with staking support
 
-## Structure
+## Proof of Stake Mechanism
 
-- **lib**: Core library containing blockchain primitives (blocks, transactions, crypto, etc.).
-- **miner**: Implementation of a mining node.
-- **node**: Implementation of a full node.
-- **wallet**: Implementation of a wallet for managing keys and transactions.
+- Validators must stake a minimum amount (`STAKE_MINIMUM_AMOUNT`) to participate
+- Validator selection is weighted by stake amount
+- Stakes are locked for `STAKE_LOCK_PERIOD` blocks after staking
+- Slashing mechanism penalizes malicious validators (double-signing, downtime)

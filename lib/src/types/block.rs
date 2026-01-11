@@ -1,6 +1,6 @@
 use super::{Transaction, TransactionOutput};
 use crate::crypto::{PublicKey, Signature};
-use crate::error::{BtcError, Result};
+use crate::error::{EthError, Result};
 use crate::sha256::Hash;
 use crate::util::MerkleRoot;
 use chrono::{DateTime, Utc};
@@ -41,14 +41,13 @@ impl Block {
     }
     pub fn verify_transactions(
         &self,
-        predicted_block_height: u64,
         utxos: &HashMap<Hash, (bool, TransactionOutput)>,
     ) -> Result<()> {
         let mut inputs: HashMap<Hash, TransactionOutput> = HashMap::new();
         if self.transactions.is_empty() {
-            return Err(BtcError::InvalidBlock);
+            return Err(EthError::InvalidBlock);
         }
-        self.verify_coinbase_transaction(predicted_block_height, utxos)?;
+        self.verify_coinbase_transaction(utxos)?;
         for transaction in self.transactions.iter().skip(1) {
             let mut input_value = 0;
             let mut output_value = 0;
@@ -57,18 +56,18 @@ impl Block {
                     .get(&input.prev_transaction_output_hash)
                     .map(|(_, output)| output);
                 if prev_output.is_none() {
-                    return Err(BtcError::InvalidTransaction);
+                    return Err(EthError::InvalidTransaction);
                 }
                 let prev_output = prev_output.unwrap();
                 // 🚨 prevent same-block double-spending
                 if inputs.contains_key(&input.prev_transaction_output_hash) {
-                    return Err(BtcError::InvalidTransaction);
+                    return Err(EthError::InvalidTransaction);
                 }
                 if !input
                     .signature
                     .verify(&input.prev_transaction_output_hash, &prev_output.pubkey)
                 {
-                    return Err(BtcError::InvalidSignature);
+                    return Err(EthError::InvalidSignature);
                 }
                 input_value += prev_output.value;
                 inputs.insert(input.prev_transaction_output_hash, prev_output.clone());
@@ -77,7 +76,7 @@ impl Block {
                 output_value += output.value;
             }
             if input_value < output_value {
-                return Err(BtcError::InvalidTransaction);
+                return Err(EthError::InvalidTransaction);
             }
         }
         Ok(())
@@ -94,17 +93,17 @@ impl Block {
                     .get(&input.prev_transaction_output_hash)
                     .map(|(_, output)| output);
                 if prev_output.is_none() {
-                    return Err(BtcError::InvalidTransaction);
+                    return Err(EthError::InvalidTransaction);
                 }
                 let prev_output = prev_output.unwrap();
                 if inputs.contains_key(&input.prev_transaction_output_hash) {
-                    return Err(BtcError::InvalidTransaction);
+                    return Err(EthError::InvalidTransaction);
                 }
                 inputs.insert(input.prev_transaction_output_hash, prev_output.clone());
             }
             for output in &transaction.outputs {
                 if outputs.contains_key(&output.hash()) {
-                    return Err(BtcError::InvalidTransaction);
+                    return Err(EthError::InvalidTransaction);
                 }
                 outputs.insert(output.hash(), output.clone());
             }
@@ -116,27 +115,24 @@ impl Block {
     }
     pub fn verify_coinbase_transaction(
         &self,
-        predicted_block_height: u64,
         utxos: &HashMap<Hash, (bool, TransactionOutput)>,
     ) -> Result<()> {
         // coinbase tx is the first transaction in the block
         let coinbase_transaction = &self.transactions[0];
         if coinbase_transaction.inputs.len() != 0 {
-            return Err(BtcError::InvalidTransaction);
+            return Err(EthError::InvalidTransaction);
         }
         if coinbase_transaction.outputs.len() == 0 {
-            return Err(BtcError::InvalidTransaction);
+            return Err(EthError::InvalidTransaction);
         }
         let miner_fees = self.calculate_miner_fees(utxos)?;
-        let block_reward = crate::INITIAL_REWARD * 10u64.pow(8)
-            / 2u64.pow((predicted_block_height / crate::HALVING_INTERVAL) as u32);
         let total_coinbase_outputs: u64 = coinbase_transaction
             .outputs
             .iter()
             .map(|output| output.value)
             .sum();
-        if total_coinbase_outputs != block_reward + miner_fees {
-            return Err(BtcError::InvalidTransaction);
+        if total_coinbase_outputs != miner_fees {
+            return Err(EthError::InvalidTransaction);
         }
         Ok(())
     }
