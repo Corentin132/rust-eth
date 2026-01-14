@@ -189,6 +189,10 @@ impl Core {
                 if *marked {
                     continue; // Skip used UTXOs
                 }
+                // Skip zero-value UTXOs - they are useless and may cause validation errors
+                if utxo.value == 0 {
+                    continue;
+                }
                 // Skip locked staked UTXOs - they can't be spent until unlocked
                 if utxo.is_stake && utxo.locked_until > current_height {
                     continue;
@@ -262,9 +266,9 @@ impl Core {
                     continue;
                 }
                 // Skip UTXOs with no value
-                // if utxo.value == 0 {
-                //     continue;
-                // }
+                if utxo.value == 0 {
+                    continue;
+                }
                 // Skip locked staked UTXOs - they can't be spent until unlocked
                 if utxo.is_stake && utxo.locked_until > current_height {
                     continue;
@@ -344,6 +348,10 @@ impl Core {
             for (marked, utxo) in utxos.iter() {
                 if *marked {
                     continue; // Skip marked UTXOs
+                }
+                // Skip UTXOs with no value
+                if utxo.value == 0 {
+                    continue;
                 }
                 // Only use staked UTXOs that are unlocked
                 if !utxo.is_stake {
