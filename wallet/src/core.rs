@@ -160,12 +160,38 @@ impl Core {
         let total_amount = amount + fee;
         let mut inputs = Vec::new();
         let mut input_sum = 0;
+
+        // Fetch current block height to check stake lock status
+        let current_height = self.fetch_block_height().await?;
+
+        // Debug: show UTXO state
+        println!("=== DEBUG UTXO State ===");
+        println!("Current block height: {}", current_height);
+        for entry in self.utxos.utxos.iter() {
+            let pubkey = entry.key();
+            let utxos = entry.value();
+            println!("Key: {:?}", pubkey);
+            for (i, (marked, utxo)) in utxos.iter().enumerate() {
+                println!(
+                    "  UTXO {}: value={}, marked={}, is_stake={}, locked_until={}",
+                    i, utxo.value, marked, utxo.is_stake, utxo.locked_until
+                );
+                let can_spend = !marked && !(utxo.is_stake && utxo.locked_until > current_height);
+                println!("    -> can_spend: {}", can_spend);
+            }
+        }
+        println!("========================");
+
         for entry in self.utxos.utxos.iter() {
             let pubkey = entry.key();
             let utxos = entry.value();
             for (marked, utxo) in utxos.iter() {
                 if *marked {
-                    continue; // Skip marked UTXOs
+                    continue; // Skip used UTXOs
+                }
+                // Skip locked staked UTXOs - they can't be spent until unlocked
+                if utxo.is_stake && utxo.locked_until > current_height {
+                    continue;
                 }
                 if input_sum >= total_amount {
                     break;
@@ -189,8 +215,14 @@ impl Core {
                 break;
             }
         }
+        println!("Total input_sum collected: {}", input_sum);
+        println!("Total amount needed: {}", total_amount);
+
         if input_sum < total_amount {
-            return Err(anyhow::anyhow!("Insufficient funds"));
+            return Err(anyhow::anyhow!(format!(
+                "Insufficient funds, total amount : {} (note: locked staked coins cannot be spent)",
+                total_amount
+            )));
         }
         let mut outputs = vec![TransactionOutput {
             value: amount,
@@ -217,6 +249,9 @@ impl Core {
         let mut inputs = Vec::new();
         let mut input_sum = 0;
 
+        // Fetch current block height to check stake lock status
+        let current_height = self.fetch_block_height().await?;
+
         // We use the first key for staking for simplicity, or we could iterate
         // For now, let's assume we stake from the first available funds found
         for entry in self.utxos.utxos.iter() {
@@ -224,6 +259,14 @@ impl Core {
             let utxos = entry.value();
             for (marked, utxo) in utxos.iter() {
                 if *marked {
+                    continue;
+                }
+                // Skip UTXOs with no value
+                // if utxo.value == 0 {
+                //     continue;
+                // }
+                // Skip locked staked UTXOs - they can't be spent until unlocked
+                if utxo.is_stake && utxo.locked_until > current_height {
                     continue;
                 }
                 if input_sum >= total_amount {
@@ -406,12 +449,24 @@ impl Core {
         }
     }
 
-    pub fn get_balance(&self) -> u64 {
-        self.utxos
+    pub async fn get_balance(&self) -> Result<u64> {
+        let current_height = self.fetch_block_height().await?;
+        Ok(self
+            .utxos
             .utxos
             .iter()
-            .map(|entry| entry.value().iter().map(|utxo| utxo.1.value).sum::<u64>())
-            .sum()
+            .map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .filter(|(marked, utxo)| {
+                        // Skip marked UTXOs and locked staked UTXOs
+                        !marked && !(utxo.is_stake && utxo.locked_until > current_height)
+                    })
+                    .map(|(_, utxo)| utxo.value)
+                    .sum::<u64>()
+            })
+            .sum())
     }
     pub fn get_min_stake_amount(&self) -> u64 {
         STAKE_MINIMUM_AMOUNT

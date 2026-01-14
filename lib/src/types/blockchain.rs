@@ -5,6 +5,7 @@ use crate::sha256::Hash;
 use crate::util::MerkleRoot;
 use crate::util::Saveable;
 use chrono::{DateTime, Utc};
+use ecdsa::signature::rand_core::block;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Result as IoResult, Write};
@@ -128,11 +129,22 @@ impl Blockchain {
         let mut stakes = HashMap::new();
         let current_height = self.block_height();
 
-        for (_, (_, output)) in self.utxos.values().enumerate() {
+        println!("=== DEBUG calculate_stakes ===");
+        println!("Current height: {}", current_height);
+        println!("Total UTXOs: {}", self.utxos.len());
+
+        for (hash, (marked, output)) in self.utxos.iter() {
             if output.is_stake {
+                // println!(
+                //     "  Found stake UTXO: value={}, locked_until={}, pubkey={:?}",
+                //     output.value, output.locked_until, output.pubkey
+                // );
                 // Only count stakes that are locked (active validators must have locked stake)
                 if output.locked_until > current_height {
+                    println!("  ✅ -> Counted as active stake");
                     *stakes.entry(output.pubkey.clone()).or_insert(0) += output.value;
+                } else {
+                    println!("  ❌ -> NOT counted (lock expired)");
                 }
             }
         }
@@ -145,6 +157,8 @@ impl Blockchain {
         }
 
         stakes.retain(|_, v| *v >= Self::get_min_stake_amount());
+        // println!("Final stakes: {:?}", stakes);
+        println!("==============================");
         stakes
     }
     pub fn get_min_stake_amount() -> u64 {
@@ -154,8 +168,9 @@ impl Blockchain {
         let stakes = self.calculate_stakes();
         let total_stake: u64 = stakes.values().sum();
 
+        // Avoid cancel genesis block
         if total_stake == 0 {
-            println!("0 crypto staked 🐒");
+            println!("0 crypto staked 🐒 ");
             return None;
         }
 

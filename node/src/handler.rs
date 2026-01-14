@@ -39,12 +39,41 @@ pub async fn handle_connection(mut socket: TcpStream) {
                 message.send_async(&mut socket).await.unwrap();
             }
 
-            DiscoverNodes => {
+            DiscoverNodes(sender_port) => {
+                // Get the peer's IP address from the socket
+                let peer_addr = match socket.peer_addr() {
+                    Ok(addr) => addr,
+                    Err(_) => {
+                        println!("❌ Could not get peer address");
+                        continue;
+                    }
+                };
+                let peer_ip = peer_addr.ip();
+                let peer_connect_addr = format!("{}:{}", peer_ip, sender_port);
+
+                // Add the peer to our node list if not already present
+                if !crate::NODES.contains_key(&peer_connect_addr) {
+                    println!(
+                        "🤝 New peer discovered: {}, connecting back...",
+                        peer_connect_addr
+                    );
+                    match tokio::net::TcpStream::connect(&peer_connect_addr).await {
+                        Ok(new_stream) => {
+                            crate::NODES.insert(peer_connect_addr.clone(), new_stream);
+                            println!("✅ Connected back to peer: {}", peer_connect_addr);
+                        }
+                        Err(e) => {
+                            println!("❌ Failed to connect back to {}: {}", peer_connect_addr, e);
+                        }
+                    }
+                }
+
                 let nodes = crate::NODES
                     .iter()
                     .map(|x| x.key().clone())
                     .collect::<Vec<_>>();
                 let message = NodeList(nodes);
+                println!("👐 sending node list to peer");
                 message.send_async(&mut socket).await.unwrap();
             }
             AskDifference(height) => {
@@ -73,9 +102,13 @@ pub async fn handle_connection(mut socket: TcpStream) {
             }
             NewBlock(block) => {
                 let mut blockchain = crate::BLOCKCHAIN.write().await;
-                println!("received new block");
+                println!("█ Received new block");
                 if blockchain.add_block(block).is_err() {
                     println!("New block rejected");
+                } else {
+                    // Rebuild UTXOs after accepting a new block
+                    blockchain.rebuild_utxos();
+                    println!("Block accepted, UTXOs rebuilt");
                 }
             }
             NewTransaction(tx) => {
@@ -86,17 +119,17 @@ pub async fn handle_connection(mut socket: TcpStream) {
                     return;
                 }
             }
-            // ValidateTemplate(block_template) => {
-            //     let blockchain = crate::BLOCKCHAIN.read().await;
-            //     let status = block_template.header.prev_block_hash
-            //         == blockchain
-            //             .blocks()
-            //             .last()
-            //             .map(|last_block| last_block.hash())
-            //             .unwrap_or(Hash::zero());
-            //     let message = TemplateValidity(status);
-            //     message.send_async(&mut socket).await.unwrap();
-            // }
+            ValidateTemplate(block_template) => {
+                let blockchain = crate::BLOCKCHAIN.read().await;
+                let status = block_template.header.prev_block_hash
+                    == blockchain
+                        .blocks()
+                        .last()
+                        .map(|last_block| last_block.hash())
+                        .unwrap_or(Hash::zero());
+                let message = TemplateValidity(status);
+                message.send_async(&mut socket).await.unwrap();
+            }
             // 🚨🚨🚨🚨🚨 Verification du block ou ça ????
             SubmitTemplate(block) => {
                 println!("received allegedly validated block");
@@ -115,8 +148,9 @@ pub async fn handle_connection(mut socket: TcpStream) {
                 for node in nodes {
                     if let Some(mut stream) = crate::NODES.get_mut(&node) {
                         let message = Message::NewBlock(block.clone());
-                        if message.send_async(&mut *stream).await.is_err() {}
-                        println!("failed to send block to {}", node);
+                        if message.send_async(&mut *stream).await.is_err() {
+                            println!("failed to send block to {}", node);
+                        }
                     }
                 }
             }

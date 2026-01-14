@@ -22,7 +22,18 @@ pub struct Cli {
     #[arg(short, long, default_value = "validator_blockchain.cbor")]
     pub blockchain_file: String,
     
-    /// Addresses of peer nodes to connect to
-    #[arg(short, long)]
-    pub nodes: Vec<String>,
+    /// Addresses of peer nodes to connect to (comma-separated, e.g. "127.0.0.1:9001,127.0.0.1:9002")
+    #[arg(short, long, default_value = "")]
+    pub nodes: String,
+}
+
+impl Cli {
+    /// Parse the nodes string into a vector of addresses
+    pub fn get_nodes(&self) -> Vec<String> {
+        self.nodes
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
 }

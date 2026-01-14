@@ -1,7 +1,7 @@
 use anyhow::Result;
 use argh::FromArgs;
-use poslib::types::Blockchain;
 use dashmap::DashMap;
+use poslib::types::Blockchain;
 use static_init::dynamic;
 use std::path::Path;
 use tokio::net::{TcpListener, TcpStream};
@@ -19,9 +19,9 @@ struct Args {
     #[argh(option, default = "String::from(\"./blockchain.cbor\")")]
     /// blockchain file location
     blockchain_file: String,
-    #[argh(positional)]
-    /// addresses of initial nodes
-    nodes: Vec<String>,
+    #[argh(option, default = "String::new()")]
+    /// addresses of initial nodes (comma-separated, e.g. "127.0.0.1:9001, 127.0.0.1:9002")
+    nodes: String,
 }
 
 #[dynamic]
@@ -35,16 +35,21 @@ async fn main() -> Result<()> {
     let args: Args = argh::from_env();
     let port = args.port;
     let blockchain_file = args.blockchain_file;
-    let nodes = args.nodes;
-    util::populate_connections(&nodes).await?;
-    println!("Total amount of known nodes: {}", NODES.len());
+    // Parse comma-separated nodes
+    let nodes: Vec<String> = args
+        .nodes
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     if Path::new(&blockchain_file).exists() {
         println!("Loading blockchain from file: {}", blockchain_file);
         util::load_blockchain(&blockchain_file).await?;
     } else {
         println!("No existing blockchain found 😫, checking with other node .. ");
-        if nodes.is_empty() {
-            println!("no initial nodes provided, starting as a seed node 🤴");
+        if NODES.is_empty() {
+            println!("no connected nodes available, starting as a seed node 🤴");
             let genesis_block = util::create_genesis_block();
             let mut blockchain = BLOCKCHAIN.write().await;
             blockchain
@@ -71,6 +76,7 @@ async fn main() -> Result<()> {
 
     // and a task to periodically save the blockchain
     tokio::spawn(util::save(blockchain_file.clone()));
+    tokio::spawn(util::populate_connections(nodes, port));
     loop {
         let (socket, _) = listener.accept().await?;
         tokio::spawn(handler::handle_connection(socket));

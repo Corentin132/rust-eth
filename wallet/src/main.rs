@@ -81,7 +81,7 @@ async fn run_cli(core: Arc<Core>) -> Result<()> {
         }
         match parts[0] {
             "balance" => {
-                println!("Current balance: {} satoshis", core.get_balance());
+                println!("Current balance: {} satoshis", core.get_balance().await?);
                 println!(
                     "Stakable balance: {} satoshis",
                     core.get_unlocked_stake_balance().await?
@@ -163,6 +163,9 @@ async fn run_cli(core: Arc<Core>) -> Result<()> {
                 println!("  send <recipient> <amount> - Send amount to recipient");
                 println!(
                     "  stake <amount>        - Send your coins to stake (or just 'stake' to view stakable balance)"
+                );
+                println!(
+                    "  unstake <amount>      - Unstake your coins (or just 'unstake' to view unstakable balance)"
                 );
                 println!("  help                  - Show this help message");
                 println!("  exit                  - Exit the wallet");

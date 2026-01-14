@@ -17,28 +17,31 @@ pub fn create_genesis_block() -> Block {
     let validator_count = validators.len() as u64;
     for path in validators {
         if let Ok(pubkey) = PublicKey::load_from_file(path) {
-            println!("Allocating genesis stake to {}", path);
-            // Staked coins - MUST have locked_until > current_height to be counted!
             outputs.push(TransactionOutput {
                 unique_id: Uuid::new_v4(),
                 value: poslib::TOTAL_SUPPLY_CAP / validator_count,
                 pubkey: pubkey.clone(),
-                is_stake: true,
-                locked_until: 1_000_000, // Locked for a very long time (active stake)
+                is_stake: false, // Regular spendable coins
+                locked_until: 0,
             });
             println!(
-                "  - Allocated {} staked coins (locked until block 1,000,000)",
+                "  - Allocated {} spendable coins",
                 poslib::TOTAL_SUPPLY_CAP / validator_count
             );
-            // Spendable coins - NOT staked, can be used immediately
+
+            println!("Allocating genesis stake to {}", path);
+
             outputs.push(TransactionOutput {
                 unique_id: Uuid::new_v4(),
-                value: 100_000_000_000,
+                value: poslib::STAKE_MINIMUM_AMOUNT,
                 pubkey: pubkey.clone(),
-                is_stake: false, // Regular spendable coins
-                locked_until: 0, // Not locked
+                is_stake: true,
+                locked_until: 100, // Locked for  the first 100 blocks
             });
-            println!("  - Allocated {} spendable coins", 100_000_000_000u64);
+            println!(
+                "  - Allocated {} staked coins (locked until block 100)",
+                poslib::STAKE_MINIMUM_AMOUNT
+            );
         }
     }
 
@@ -74,20 +77,58 @@ pub async fn load_blockchain(blockchain_file: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn populate_connections(nodes: &[String]) -> Result<()> {
+pub async fn populate_connections(nodes: Vec<String>, port: u16) -> Result<()> {
     println!("trying to connect to other nodes...");
-    for node in nodes {
+    'node_loop: for node in nodes {
         println!("connecting to {}", node);
-        let mut stream = TcpStream::connect(&node).await?;
-        let message = Message::DiscoverNodes;
-        message.send_async(&mut stream).await?;
+        // Skip connecting to ourselves
+        if node.contains(&format!("127.0.0.1:{}", port))
+            || node.contains(&format!("localhost:{}", port))
+        {
+            println!("  - skipping self (127.0.0.1:{})", port);
+            continue 'node_loop;
+        }
+        // Try to connect with retry
+        let mut retries = 5;
+        let stream = loop {
+            match TcpStream::connect(&node).await {
+                Ok(s) => break s,
+                Err(e) => {
+                    retries -= 1;
+                    if retries == 0 {
+                        println!("  - failed to connect to {} after 3 attempts: {}", node, e);
+                        continue 'node_loop;
+                    }
+                    println!(
+                        "  - connection failed, retrying... ({} attempts left)",
+                        retries
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            }
+        };
+
+        let mut stream = stream;
+        let message = Message::DiscoverNodes(port);
+        if let Err(e) = message.send_async(&mut stream).await {
+            println!("  - failed to send DiscoverNodes to {}: {}", node, e);
+            continue;
+        }
         println!("sent DiscoverNodes to {}", node);
-        let message = Message::receive_async(&mut stream).await?;
+
+        let message = match Message::receive_async(&mut stream).await {
+            Ok(m) => m,
+            Err(e) => {
+                println!("  - failed to receive response from {}: {}", node, e);
+                continue;
+            }
+        };
         match message {
             Message::NodeList(child_nodes) => {
                 println!("received NodeList from {}", node);
                 for child_node in child_nodes {
                     println!("adding node {}", child_node);
+
                     let new_stream = TcpStream::connect(&child_node).await?;
                     crate::NODES.insert(child_node, new_stream);
                 }

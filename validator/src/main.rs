@@ -57,8 +57,9 @@ async fn main() -> Result<()> {
     // REUSE NODE INITIALIZATION (from node_lib)
     // =========================================================================
 
+    let nodes = cli.get_nodes();
+
     // Connect to peer nodes
-    util::populate_connections(&cli.nodes).await?;
     println!("📡 Connected to {} peer nodes", NODES.len());
 
     // Load or initialize blockchain
@@ -67,13 +68,15 @@ async fn main() -> Result<()> {
         util::load_blockchain(&cli.blockchain_file).await?;
     } else {
         println!("📂 No blockchain found, syncing from network...");
-        if cli.nodes.is_empty() {
+        if nodes.is_empty() {
             println!("🌱 No peers provided, creating genesis block as seed validator");
             let genesis_block = util::create_genesis_block();
             let mut blockchain = BLOCKCHAIN.write().await;
             blockchain
                 .add_block(genesis_block)
                 .expect("Failed to add genesis block");
+            // Rebuild UTXOs after creating genesis block
+            blockchain.rebuild_utxos();
         } else {
             let (longest_name, longest_count) = util::find_longest_chain_node().await?;
             util::download_blockchain(&longest_name, longest_count).await?;
@@ -114,7 +117,9 @@ async fn main() -> Result<()> {
     // Start background tasks (reusing node code)
     tokio::spawn(util::cleanup());
     tokio::spawn(util::save(cli.blockchain_file.clone()));
-
+    // DEV : async func so listener port is passed correctly
+    // In Eth, the validator connects to other nodes rather than other nodes connecting to it --> with a trusted boot node logicic 🫡
+    tokio::spawn(util::populate_connections(nodes, cli.port));
     // Spawn connection handler (node functionality)
     let listener_handle = tokio::spawn(async move {
         loop {
@@ -153,6 +158,8 @@ async fn main() -> Result<()> {
                     if let Err(e) = proposer.propose_block().await {
                         eprintln!("❌ Block proposal failed: {}", e);
                     }
+                }else {
+                    println!("⏳ Not our turn to propose a block this slot.");
                 }
             }
             _ = tokio::signal::ctrl_c() => {

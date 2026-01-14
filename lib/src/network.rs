@@ -27,7 +27,7 @@ pub enum Message {
     /// This is to prevent the node from mining an invalid
     /// block (e.g. if one has been found in the meantime,
     /// or if transactions have been removed from the mempool)
-    // ValidateTemplate(Block),
+    ValidateTemplate(Block),
     /// If template is valid
     TemplateValidity(bool),
     /// Submit a validated block to a node
@@ -40,8 +40,9 @@ pub enum Message {
         evidence: Vec<u8>, // Block signatures or other proof
     },
     /// Ask a node to report all the other nodes it knows
-    /// about
-    DiscoverNodes,
+    /// about. Includes the sender's listening port so the receiver
+    /// can connect back.
+    DiscoverNodes(u16),
     /// This is the response to DiscoverNodes
     NodeList(Vec<String>),
     /// Ask a node whats the highest block it knows about
