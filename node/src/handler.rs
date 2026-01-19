@@ -127,7 +127,6 @@ pub async fn handle_connection(mut socket: TcpStream) {
                 let message = TemplateValidity(status);
                 message.send_async(&mut socket).await.unwrap();
             }
-            // 🚨🚨🚨🚨🚨 Verification du block ou ça ????
             SubmitTemplate(block) => {
                 println!("received allegedly validated block");
                 let mut blockchain = crate::BLOCKCHAIN.write().await;
@@ -288,37 +287,6 @@ pub async fn handle_connection(mut socket: TcpStream) {
                 } else {
                     println!("❌ Invalid double-vote evidence");
                 }
-            }
-
-            FetchCurrentSlot => {
-                let blockchain = crate::BLOCKCHAIN.read().await;
-                let slot = blockchain.current_slot();
-                let message = Message::CurrentSlot(slot);
-                let _ = message.send_async(&mut socket).await;
-            }
-
-            CurrentSlot(_) => {
-                // Response message - handled by requester
-            }
-
-            FetchBlockStatus(block_hash) => {
-                let blockchain = crate::BLOCKCHAIN.read().await;
-                let hash = Hash::from_bytes(block_hash);
-                let is_justified = blockchain.has_consensus(&hash);
-                let is_finalized = blockchain.is_finalized(&hash);
-                let attestation_count = blockchain.get_attestations(&hash).len();
-
-                let message = Message::BlockStatusResponse {
-                    block_hash,
-                    is_justified,
-                    is_finalized,
-                    attestation_count,
-                };
-                let _ = message.send_async(&mut socket).await;
-            }
-
-            BlockStatusResponse { .. } => {
-                // Response message - handled by requester
             }
         }
     }

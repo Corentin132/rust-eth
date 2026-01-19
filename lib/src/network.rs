@@ -72,19 +72,6 @@ pub enum Message {
     AttestationBundle(Vec<Attestation>),
     /// Report double-vote evidence (for slashing)
     ReportDoubleVote(DoubleVoteEvidence),
-    /// Request the current slot number
-    FetchCurrentSlot,
-    /// Response with current slot
-    CurrentSlot(u64),
-    /// Request consensus state for a block
-    FetchBlockStatus([u8; 32]),
-    /// Response with block status (justified, finalized, etc.)
-    BlockStatusResponse {
-        block_hash: [u8; 32],
-        is_justified: bool,
-        is_finalized: bool,
-        attestation_count: usize,
-    },
 }
 
 // We are going to use length-prefixed encoding for message
