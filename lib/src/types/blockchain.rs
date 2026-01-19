@@ -1,11 +1,10 @@
-use super::{Block, Transaction, TransactionOutput};
+use super::{Attestation, Block, ConsensusState, Transaction, TransactionOutput};
 use crate::crypto::PublicKey;
 use crate::error::{EthError, Result};
 use crate::sha256::Hash;
 use crate::util::MerkleRoot;
 use crate::util::Saveable;
 use chrono::{DateTime, Utc};
-use ecdsa::signature::rand_core::block;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Result as IoResult, Write};
@@ -51,9 +50,14 @@ pub struct Blockchain {
     /// Slashed validators - reduced stake amounts (pubkey -> slashed amount)
     #[serde(default)]
     slashed_amounts: HashMap<PublicKey, u64>,
+    /// Consensus state for PoS with attestations
+    #[serde(default)]
+    consensus: ConsensusState,
 }
 impl Blockchain {
     pub fn new() -> Self {
+        // Use current time as genesis time
+        let genesis_time = Utc::now().timestamp() as u64;
         Blockchain {
             blocks: vec![],
             utxos: HashMap::new(),
@@ -61,6 +65,19 @@ impl Blockchain {
             orphan_children: HashMap::new(),
             slashing_history: vec![],
             slashed_amounts: HashMap::new(),
+            consensus: ConsensusState::new(genesis_time),
+        }
+    }
+
+    pub fn new_with_genesis_time(genesis_time: u64) -> Self {
+        Blockchain {
+            blocks: vec![],
+            utxos: HashMap::new(),
+            mempool: vec![],
+            orphan_children: HashMap::new(),
+            slashing_history: vec![],
+            slashed_amounts: HashMap::new(),
+            consensus: ConsensusState::new(genesis_time),
         }
     }
     pub fn add_block(&mut self, block: Block) -> Result<()> {
@@ -82,11 +99,15 @@ impl Blockchain {
                     .push(block);
                 return Ok(());
             }
-            // check if the block's validator is the expected one
-            let expected_validator = self.get_next_validator(&block.header.prev_block_hash);
+            // check if the block's validator is the expected one for this slot
+            // Use slot-based validator selection for consistency with is_slot_for_proposal
+            let expected_validator = self.get_validator_for_slot(
+                block.header.slot,
+                &block.header.prev_block_hash
+            );
             if let Some(validator) = expected_validator {
                 if block.header.validator != validator {
-                    println!("invalid validator");
+                    println!("invalid validator: expected {:?}, got {:?}", validator, block.header.validator);
                     return Err(EthError::InvalidValidator);
                 }
             } else {
@@ -118,6 +139,20 @@ impl Blockchain {
             block.transactions.iter().map(|tx| tx.hash()).collect();
         self.mempool
             .retain(|(_, tx)| !block_transactions.contains(&tx.hash()));
+
+        // Extend the validator's stake lock by 3 blocks after proposing
+        // This ensures we have time to verify the block's validity before they can unstake
+        let validator_pubkey = block.header.validator.clone();
+        let new_lock_height = self.block_height() + 3;
+        for (_, (_, utxo)) in self.utxos.iter_mut() {
+            if utxo.is_stake && utxo.pubkey == validator_pubkey {
+                // Only extend if the new lock is greater than current
+                if utxo.locked_until < new_lock_height {
+                    utxo.locked_until = new_lock_height;
+                }
+            }
+        }
+
         self.blocks.push(block);
 
         let new_tip_hash = self.blocks.last().unwrap().hash();
@@ -391,11 +426,7 @@ impl Blockchain {
             });
         }
     }
-    pub fn calculate_block_reward(&self) -> u64 {
-        let block_height = self.block_height();
-        let halvings = block_height / crate::HALVING_INTERVAL;
-        (crate::INITIAL_REWARD * 10u64.pow(8)) >> halvings
-    }
+
     //🚨 Better to have getters than public fields --> for futur stockage purposes
 
     /// Slash a validator for misbehavior (double-signing, downtime, etc.)
@@ -460,5 +491,200 @@ impl Blockchain {
     // blocks
     pub fn blocks(&self) -> impl Iterator<Item = &Block> {
         self.blocks.iter()
+    }
+
+    // ===== Consensus Methods =====
+
+    /// Get the current slot based on current time
+    pub fn current_slot(&self) -> u64 {
+        let now = Utc::now().timestamp() as u64;
+        self.consensus.calculate_current_slot(now)
+    }
+
+    /// Get the slot for a specific timestamp
+    pub fn slot_for_timestamp(&self, timestamp: &DateTime<Utc>) -> u64 {
+        self.consensus.slot_for_time(timestamp.timestamp() as u64)
+    }
+
+    /// Get the expected validator for a given slot
+    pub fn get_validator_for_slot(&self, slot: u64, seed: &Hash) -> Option<PublicKey> {
+        // Use slot + seed for deterministic selection
+        let mut slot_seed_data = seed.as_bytes().to_vec();
+        slot_seed_data.extend_from_slice(&slot.to_be_bytes());
+        let slot_seed = Hash::hash_bytes(&slot_seed_data);
+        self.get_next_validator(&slot_seed)
+    }
+
+    /// Check if it's time to propose a block for the current slot
+    pub fn is_slot_for_proposal(&self, validator: &PublicKey) -> bool {
+        let current_slot = self.current_slot();
+        let last_block = self.blocks.last();
+
+        // Get the seed (last block hash or zero for genesis)
+        let seed = last_block.map(|b| b.hash()).unwrap_or_else(Hash::zero);
+
+        // Check if this validator should propose for this slot
+        if let Some(expected_validator) = self.get_validator_for_slot(current_slot, &seed) {
+            return &expected_validator == validator;
+        }
+        false
+    }
+
+    /// Add an attestation for a block
+    /// Returns Ok(true) if attestation was new and valid, Ok(false) if duplicate
+    pub fn add_attestation(&mut self, attestation: Attestation) -> Result<bool> {
+        // Verify the attestation signature
+        if !attestation.verify() {
+            println!("❌ Invalid attestation signature");
+            return Err(EthError::InvalidSignature);
+        }
+
+        // Check for double voting
+        if self.consensus.check_double_vote(
+            &attestation.validator,
+            attestation.slot,
+            &attestation.block_hash,
+        ) {
+            println!(
+                "🚨 DOUBLE VOTE DETECTED from validator {:?} at slot {}",
+                attestation.validator, attestation.slot
+            );
+            // Slash the validator for double voting
+            self.slash_validator(&attestation.validator, SlashingReason::DoubleSigning)?;
+            return Err(EthError::DoubleVote);
+        }
+
+        // Get the validator's stake
+        let stakes = self.calculate_stakes();
+        let validator_stake = stakes.get(&attestation.validator).cloned().unwrap_or(0);
+
+        if validator_stake == 0 {
+            println!("❌ Attestation from non-validator (no stake)");
+            return Err(EthError::InvalidValidator);
+        }
+
+        // Record this attestation
+        self.consensus.record_attestation(
+            attestation.validator.clone(),
+            attestation.slot,
+            attestation.block_hash,
+        );
+
+        // Add to pending block
+        if let Some(pending) = self.consensus.pending_blocks.get_mut(&attestation.block_hash) {
+            let is_new = pending.add_attestation(attestation.clone(), validator_stake);
+
+            if is_new {
+                println!(
+                    "✅ Attestation added: slot={}, validator={:?}, stake={}",
+                    attestation.slot, attestation.validator, validator_stake
+                );
+
+                // Check if we now have supermajority
+                let total_stake: u64 = stakes.values().sum();
+                if self
+                    .consensus
+                    .try_justify(&attestation.block_hash, total_stake)
+                {
+                    // Try to finalize
+                    self.consensus.try_finalize(self.block_height());
+                }
+
+                return Ok(true);
+            }
+        } else {
+            // Block not in pending - might be old or unknown
+            println!(
+                "⚠️ Attestation for unknown block: {:?}",
+                attestation.block_hash
+            );
+        }
+
+        Ok(false)
+    }
+
+    /// Propose a block (adds it to pending for attestation collection)
+    pub fn propose_block(&mut self, block: &Block) -> Result<()> {
+        let block_hash = block.hash();
+        let slot = block.header.slot;
+
+        // Add to pending blocks for consensus
+        self.consensus.add_pending_block(block_hash, slot);
+
+        println!(
+            "📦 Block proposed: slot={}, hash={:?}",
+            slot,
+            &block_hash.as_bytes()[0..4]
+        );
+
+        Ok(())
+    }
+
+    /// Check if a block has reached consensus (supermajority attestations)
+    pub fn has_consensus(&self, block_hash: &Hash) -> bool {
+        self.consensus.is_justified(block_hash)
+    }
+
+    /// Check if a block is finalized
+    pub fn is_finalized(&self, block_hash: &Hash) -> bool {
+        self.consensus.is_finalized(block_hash)
+    }
+
+    /// Get the finalized block height
+    pub fn finalized_height(&self) -> u64 {
+        self.consensus.finalized_height
+    }
+
+    /// Get consensus state (for external access)
+    pub fn consensus(&self) -> &ConsensusState {
+        &self.consensus
+    }
+
+    /// Get mutable consensus state
+    pub fn consensus_mut(&mut self) -> &mut ConsensusState {
+        &mut self.consensus
+    }
+
+    /// Get the genesis time
+    pub fn genesis_time(&self) -> u64 {
+        self.consensus.genesis_time
+    }
+
+    /// Set the genesis time (useful when loading from file)
+    pub fn set_genesis_time(&mut self, genesis_time: u64) {
+        self.consensus.genesis_time = genesis_time;
+    }
+
+    /// Get all validators that should attest in this slot
+    pub fn get_attesters_for_slot(&self, _slot: u64) -> Vec<PublicKey> {
+        // In this simple implementation, ALL validators should attest to every block
+        // In Ethereum 2.0, validators are divided into committees
+        let stakes = self.calculate_stakes();
+        stakes.keys().cloned().collect()
+    }
+
+    /// Get the attestations for a block
+    pub fn get_attestations(&self, block_hash: &Hash) -> Vec<Attestation> {
+        self.consensus
+            .pending_blocks
+            .get(block_hash)
+            .map(|p| p.attestations.clone())
+            .unwrap_or_default()
+    }
+
+    /// Cleanup old consensus data
+    pub fn cleanup_consensus(&mut self) {
+        self.consensus.cleanup_old_pending();
+    }
+
+    /// Update consensus slot based on current time
+    pub fn update_consensus_slot(&mut self) {
+        let now = Utc::now().timestamp() as u64;
+        self.consensus.update_slot(now);
+    }
+
+    /// Get total stake (for calculating supermajority threshold)
+    pub fn total_stake(&self) -> u64 {
+        self.calculate_stakes().values().sum()
     }
 }

@@ -14,6 +14,12 @@ pub fn create_genesis_block() -> Block {
 
     // Try to load pre-defined validators
     let validators = vec!["validator/alice.pub.pem", "validator/bob.pub.pem"];
+    //🫡 Init for evil validators testing
+    // let validators = vec![
+    //     "validator/bob.pub.pem",
+    //     "evil_validator/evil1.pub.pem",
+    //     "evil_validator/evil2.pub.pem",
+    // ];
     let validator_count = validators.len() as u64;
     for path in validators {
         if let Ok(pubkey) = PublicKey::load_from_file(path) {

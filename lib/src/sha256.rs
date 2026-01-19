@@ -25,6 +25,14 @@ impl Hash {
         Hash(U256::from_big_endian(&hash_array))
     }
 
+    /// Hash raw bytes directly (not serialized)
+    pub fn hash_bytes(data: &[u8]) -> Self {
+        let hash = digest(data);
+        let hash_bytes = hex::decode(hash).unwrap();
+        let hash_array: [u8; 32] = hash_bytes.as_slice().try_into().unwrap();
+        Hash(U256::from_big_endian(&hash_array))
+    }
+
     // zero hash
     pub fn zero() -> Self {
         Hash(U256::zero())
@@ -35,6 +43,11 @@ impl Hash {
         self.0.to_big_endian()
 
         // bytes.as_slice().try_into().unwrap()
+    }
+
+    /// Create a Hash from raw bytes
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Hash(U256::from_big_endian(&bytes))
     }
 }
 use std::fmt;

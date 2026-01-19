@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
-members = ["wallet", "lib", "validator", "node"]
+members = ["wallet", "lib", "validator", "node", "evil_validator"]
 

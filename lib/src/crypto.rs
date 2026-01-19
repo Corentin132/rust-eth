@@ -43,6 +43,15 @@ impl Saveable for PublicKey {
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Signature(ECDSASignature<Secp256k1>);
+
+impl PartialEq for Signature {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bytes() == other.0.to_bytes()
+    }
+}
+
+impl Eq for Signature {}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PublicKey(VerifyingKey<Secp256k1>);
 

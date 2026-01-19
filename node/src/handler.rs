@@ -1,11 +1,8 @@
-use chrono::Utc;
-use poslib::crypto::{PublicKey, Signature};
 use poslib::network::Message;
 use poslib::sha256::Hash;
-use poslib::types::{Block, BlockHeader, Transaction, TransactionOutput};
-use poslib::util::MerkleRoot;
+use poslib::types::DoubleVoteEvidence;
 use tokio::net::TcpStream;
-use uuid::Uuid;
+
 pub async fn handle_connection(mut socket: TcpStream) {
     loop {
         // read a message from the socket
@@ -201,6 +198,127 @@ pub async fn handle_connection(mut socket: TcpStream) {
                         println!("Failed to slash validator: {}", e);
                     }
                 }
+            }
+
+            // ===== Consensus Messages =====
+            ProposeBlock(block) => {
+                println!("📦 Received proposed block for slot {}", block.header.slot);
+                let mut blockchain = crate::BLOCKCHAIN.write().await;
+
+                // Validate the block first
+                if let Err(e) = blockchain.add_block(block.clone()) {
+                    println!("❌ Proposed block rejected: {:?}", e);
+                    continue;
+                }
+                blockchain.rebuild_utxos();
+
+                // Register block for consensus tracking
+                let _ = blockchain.propose_block(&block);
+
+                println!("✅ Proposed block accepted, awaiting attestations");
+            }
+
+            AttestBlock(attestation) => {
+                println!(
+                    "🗳️ Received attestation for slot {} from {:?}",
+                    attestation.slot, &attestation.validator
+                );
+
+                let mut blockchain = crate::BLOCKCHAIN.write().await;
+
+                match blockchain.add_attestation(attestation.clone()) {
+                    Ok(true) => {
+                        // New valid attestation - broadcast to peers
+                        let nodes = crate::NODES
+                            .iter()
+                            .map(|x| x.key().clone())
+                            .collect::<Vec<_>>();
+
+                        for node in nodes {
+                            if let Some(mut stream) = crate::NODES.get_mut(&node) {
+                                let message = Message::AttestBlock(attestation.clone());
+                                let _ = message.send_async(&mut *stream).await;
+                            }
+                        }
+                    }
+                    Ok(false) => {
+                        println!("⚠️ Duplicate attestation ignored");
+                    }
+                    Err(e) => {
+                        println!("❌ Attestation rejected: {:?}", e);
+                    }
+                }
+            }
+
+            RequestAttestations(block_hash) => {
+                let blockchain = crate::BLOCKCHAIN.read().await;
+                let hash = Hash::from_bytes(block_hash);
+                let attestations = blockchain.get_attestations(&hash);
+                let message = Message::AttestationBundle(attestations);
+                let _ = message.send_async(&mut socket).await;
+            }
+
+            AttestationBundle(attestations) => {
+                println!("📦 Received {} attestations", attestations.len());
+                let mut blockchain = crate::BLOCKCHAIN.write().await;
+                for attestation in attestations {
+                    let _ = blockchain.add_attestation(attestation);
+                }
+            }
+
+            ReportDoubleVote(evidence) => {
+                println!("🚨 Received double-vote evidence!");
+                if evidence.verify() {
+                    use poslib::types::SlashingReason;
+                    let mut blockchain = crate::BLOCKCHAIN.write().await;
+                    match blockchain.slash_validator(
+                        &evidence.attestation1.validator,
+                        SlashingReason::DoubleSigning,
+                    ) {
+                        Ok(penalty) => {
+                            println!(
+                                "🔪 Validator {:?} slashed for double voting! Penalty: {}",
+                                evidence.attestation1.validator, penalty
+                            );
+                        }
+                        Err(e) => {
+                            println!("Failed to slash: {:?}", e);
+                        }
+                    }
+                } else {
+                    println!("❌ Invalid double-vote evidence");
+                }
+            }
+
+            FetchCurrentSlot => {
+                let blockchain = crate::BLOCKCHAIN.read().await;
+                let slot = blockchain.current_slot();
+                let message = Message::CurrentSlot(slot);
+                let _ = message.send_async(&mut socket).await;
+            }
+
+            CurrentSlot(_) => {
+                // Response message - handled by requester
+            }
+
+            FetchBlockStatus(block_hash) => {
+                let blockchain = crate::BLOCKCHAIN.read().await;
+                let hash = Hash::from_bytes(block_hash);
+                let is_justified = blockchain.has_consensus(&hash);
+                let is_finalized = blockchain.is_finalized(&hash);
+                let attestation_count = blockchain.get_attestations(&hash).len();
+
+                let message = Message::BlockStatusResponse {
+                    block_hash,
+                    is_justified,
+                    is_finalized,
+                    attestation_count,
+                };
+                let _ = message.send_async(&mut socket).await;
+            }
+
+            BlockStatusResponse { .. } => {
+                // Response message - handled by requester
             }
         }
     }

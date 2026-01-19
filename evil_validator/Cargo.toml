@@ -1,0 +1,18 @@
+[package]
+name = "evil_validator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+poslib = { path = "../lib" }
+node_lib = { package = "node", path = "../node" }
+clap = { version = "4.5.53", features = ["derive"] }
+tokio = { version = "1.48.0", features = ["full"] }
+chrono = "0.4.42"
+uuid = { version = "1.18.1", features = ["v4"] }
+serde = "1.0.228"
+ciborium = "0.2.2"
+# TUI dependencies
+ratatui = "0.29"
+crossterm = "0.28"

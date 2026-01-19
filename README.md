@@ -112,3 +112,8 @@ public = "../validator/alice.pub.pem"
 private = "../validator/alice.priv.cbor"
 ```
 
+
+# Evil node to try different attack
+```bash 
+cargo run --bin evil_validator -- --private-key-file ./evil_validator/src/keys/evil2.priv.cbor --port 9003  --nodes "127.0.0.1:9000" --evil-partner "127.0.0.1:9002" --attack-mode double-spend -b ./validator_blockchain.cbor --evil-id 2
+```

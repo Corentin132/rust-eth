@@ -1,4 +1,4 @@
-use super::{Transaction, TransactionOutput};
+use super::{Attestation, Transaction, TransactionOutput};
 use crate::crypto::{PublicKey, Signature};
 use crate::error::{EthError, Result};
 use crate::sha256::Hash;
@@ -26,6 +26,9 @@ pub struct Block {
     pub header: BlockHeader,
     pub transactions: Vec<Transaction>,
     pub signature: Signature,
+    /// Attestations from validators for the parent block (included for consensus proof)
+    #[serde(default)]
+    pub parent_attestations: Vec<Attestation>,
 }
 
 impl Block {
@@ -34,6 +37,21 @@ impl Block {
             header,
             transactions,
             signature,
+            parent_attestations: Vec::new(),
+        }
+    }
+
+    pub fn new_with_attestations(
+        header: BlockHeader,
+        transactions: Vec<Transaction>,
+        signature: Signature,
+        parent_attestations: Vec<Attestation>,
+    ) -> Self {
+        Block {
+            header,
+            transactions,
+            signature,
+            parent_attestations,
         }
     }
     pub fn hash(&self) -> Hash {
@@ -144,6 +162,9 @@ pub struct BlockHeader {
     pub prev_block_hash: Hash,
     pub merkle_root: MerkleRoot,
     pub validator: PublicKey,
+    /// Slot number for this block (time-based consensus)
+    #[serde(default)]
+    pub slot: u64,
 }
 impl BlockHeader {
     pub fn new(
@@ -157,8 +178,26 @@ impl BlockHeader {
             prev_block_hash,
             merkle_root,
             validator,
+            slot: 0,
         }
     }
+
+    pub fn new_with_slot(
+        timestamp: DateTime<Utc>,
+        prev_block_hash: Hash,
+        merkle_root: MerkleRoot,
+        validator: PublicKey,
+        slot: u64,
+    ) -> Self {
+        BlockHeader {
+            timestamp,
+            prev_block_hash,
+            merkle_root,
+            validator,
+            slot,
+        }
+    }
+
     pub fn hash(&self) -> Hash {
         Hash::hash(self)
     }

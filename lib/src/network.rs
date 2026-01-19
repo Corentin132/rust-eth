@@ -4,7 +4,7 @@ use std::io::{Error as IoError, Read, Write};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::crypto::PublicKey;
-use crate::types::{Block, Transaction, TransactionOutput};
+use crate::types::{Attestation, Block, DoubleVoteEvidence, Transaction, TransactionOutput};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum Message {
@@ -60,6 +60,31 @@ pub enum Message {
     BlockHeight(u64),
     /// Response with the next expected validator's public key (None if no validators)
     NextValidator(Option<PublicKey>),
+
+    // ===== Consensus Messages =====
+    /// Propose a new block for the current slot (validators will attest to it)
+    ProposeBlock(Block),
+    /// A validator's attestation (vote) for a block
+    AttestBlock(Attestation),
+    /// Request attestations for a specific block hash
+    RequestAttestations([u8; 32]),
+    /// Bundle of attestations for a block
+    AttestationBundle(Vec<Attestation>),
+    /// Report double-vote evidence (for slashing)
+    ReportDoubleVote(DoubleVoteEvidence),
+    /// Request the current slot number
+    FetchCurrentSlot,
+    /// Response with current slot
+    CurrentSlot(u64),
+    /// Request consensus state for a block
+    FetchBlockStatus([u8; 32]),
+    /// Response with block status (justified, finalized, etc.)
+    BlockStatusResponse {
+        block_hash: [u8; 32],
+        is_justified: bool,
+        is_finalized: bool,
+        attestation_count: usize,
+    },
 }
 
 // We are going to use length-prefixed encoding for message

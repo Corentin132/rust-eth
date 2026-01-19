@@ -1,0 +1,14 @@
+default_node = "127.0.0.1:9000"
+
+[fee_config]
+fee_type = "Percent"
+value = 0.1
+
+[[contacts]]
+name = "evil1"
+key = "../evil_validator/src/keys/evil1.pub.pem"
+
+
+[[my_keys]]
+public = "../evil_validator/src/keys/evil2.pub.pem"
+private = "../evil_validator/src/keys/evil2.priv.cbor"

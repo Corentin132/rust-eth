@@ -32,6 +32,12 @@ pub enum EthError {
     ValidatorSlashed,
     #[error("Double signing detected")]
     DoubleSigning,
+    #[error("Double vote detected")]
+    DoubleVote,
+    #[error("Invalid attestation")]
+    InvalidAttestation,
+    #[error("Invalid slot")]
+    InvalidSlot,
 }
 
 pub type Result<T> = std::result::Result<T, EthError>;
